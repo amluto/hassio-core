@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Lutron QS",
+        "description": "Enter the connection details for your Lutron QSE-CI-NWK-E access point.",
+        "data": {
+          "host": "IP address",
+          "username": "Username",
+          "password": "Password"
+        },
+        "data_description": {
+          "host": "The IP address of your Lutron QSE-CI-NWK-E access point.",
+          "username": "The username for authentication (default is 'nwk2').",
+          "password": "The password for authentication (leave blank if no password is set)."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the Lutron QS access point. Please check the IP address and try again.",
+      "invalid_auth": "Invalid username or password. Please check your credentials and try again.",
+      "unknown": "An unexpected error occurred. Please try again."
+    },
+    "abort": {
+      "already_configured": "This Lutron QS access point is already configured."
+    }
+  }
+}
