@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 
-from pylutron_integration import connection as lutron_connection
-from pylutron_integration import devices as lutron_devices
-from pylutron_integration import qse
+from pylutron_integration import (
+    connection as lutron_connection,
+    devices as lutron_devices,
+    qse,
+)
 from pylutron_integration.types import SerialNumber
 
 from homeassistant.config_entries import ConfigEntry
@@ -16,7 +19,6 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platfor
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.entity import Entity
 
 from .const import DOMAIN, MANUFACTURER, MODEL_HUB
 
@@ -32,8 +34,11 @@ class LutronQSData:
 
     connection: lutron_connection.LutronConnection
     universe: qse.LutronUniverse
-    # Maps (serial_number, component, action) to entity reference for routing updates
-    entity_routing_table: dict[tuple[SerialNumber, int, lutron_devices.Action], Entity]
+    # Maps (serial_number, component, action) to handler method for routing updates
+    entity_routing_table: dict[
+        tuple[SerialNumber, int, lutron_devices.Action],
+        Callable[[lutron_devices.DeviceUpdate], None],
+    ]
 
 
 type LutronQSConfigEntry = ConfigEntry[LutronQSData]
@@ -64,27 +69,21 @@ async def monitor_unsolicited_messages(
 
             _LOGGER.debug(f'Received update: {update!r}')
 
-            # Look up the entity in the routing table
+            # Look up the handler in the routing table
             routing_key = (update.serial_number, update.component, update.action)
-            entity = entry.runtime_data.entity_routing_table.get(routing_key)
+            handler = entry.runtime_data.entity_routing_table.get(routing_key)
 
-            if entity is None:
+            if handler is None:
                 _LOGGER.debug(
-                    "No entity registered for device update: serial=%s, component=%d, action=%s",
+                    "No handler registered for device update: serial=%s, component=%d, action=%s",
                     update.serial_number,
                     update.component,
                     update.action,
                 )
                 continue
 
-            # Call the entity's handle_update method
-            # TODO: make this type-check friendly (have an abc or an extra base class for this)
-            if hasattr(entity, "handle_update"):
-                entity.handle_update(update)
-            else:
-                _LOGGER.warning(
-                    "Entity %s does not have handle_update method", entity.entity_id
-                )
+            # Call the handler method directly
+            handler(update)
 
     except asyncio.CancelledError:
         _LOGGER.debug("Unsolicited message monitoring cancelled")
@@ -108,7 +107,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LutronQSConfigEntry) -> 
     # Connect to the Lutron QS access point
     try:
         reader, writer = await asyncio.open_connection(host, 23)
-    except (OSError, asyncio.TimeoutError) as err:
+    except (TimeoutError, OSError) as err:
         raise ConfigEntryNotReady(f"Unable to connect to {host}") from err
 
     _LOGGER.debug(f"TCP connection to {host} established")
@@ -123,13 +122,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: LutronQSConfigEntry) -> 
         )
     except lutron_connection.LoginError as err:
         raise ConfigEntryAuthFailed(f"Authentication failed for {host}") from err
-    except (OSError, asyncio.TimeoutError) as err:
+    except (TimeoutError, OSError) as err:
         raise ConfigEntryNotReady(f"Connection failed during login to {host}") from err
 
     # Enumerate all devices in the Lutron system
     try:
         universe = await qse.enumerate_universe(conn)
-    except (OSError, asyncio.TimeoutError, lutron_connection.ProtocolError) as err:
+    except (TimeoutError, OSError, lutron_connection.ProtocolError) as err:
         await conn.disconnect()
         raise ConfigEntryNotReady(f"Failed to enumerate devices on {host}") from err
 

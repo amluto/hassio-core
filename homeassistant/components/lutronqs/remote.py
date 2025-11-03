@@ -7,20 +7,23 @@ and scenes 1-16 are defined externally to this integration.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pylutron_integration.devices import Action, DeviceUpdate
 from pylutron_integration.types import SerialNumber
 
-from homeassistant.components.remote import ATTR_ACTIVITY, RemoteEntity, RemoteEntityFeature
+from homeassistant.components.remote import (
+    ATTR_ACTIVITY,
+    RemoteEntity,
+    RemoteEntityFeature,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import LutronQSConfigEntry
-from .const import DOMAIN, MANUFACTURER
+from .entity import LutronQSEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -75,11 +78,9 @@ async def async_setup_entry(
     async_add_entities(entities, True)
 
 
-class LutronQSSceneController(RemoteEntity):
+class LutronQSSceneController(LutronQSEntity, RemoteEntity):
     """Representation of a Lutron QS scene controller as a remote."""
 
-    _attr_has_entity_name = True
-    _attr_should_poll = False
     _attr_supported_features = RemoteEntityFeature.ACTIVITY
 
     def __init__(
@@ -90,53 +91,20 @@ class LutronQSSceneController(RemoteEntity):
         device_name: str,
     ) -> None:
         """Initialize a Lutron QS scene controller."""
-        self._entry = entry
-        self._device_sn = device_sn
-        self._component_number = component_number
+        super().__init__(entry, device_sn, component_number)
         self._device_name = device_name
-
-        serial = device_sn.sn.decode()
-
-        # Unique ID: serial_number_component_number
-        self._attr_unique_id = f"{serial}_{component_number}"
 
         # Entity name: "Scene controller"
         self._attr_name = "Scene controller"
 
-        # Device info
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, serial)},
-        )
-
         # State: scene 0 = off, scenes 1-16 = on
         self._current_scene: int = 0
 
-    async def async_added_to_hass(self) -> None:
-        """Call when entity is added to hass."""
-        # Register this entity in the routing table for CURRENT_SCENE updates
-        routing_key = (
-            self._device_sn,
-            self._component_number,
-            Action.CURRENT_SCENE,
-        )
-        self._entry.runtime_data.entity_routing_table[routing_key] = self
-
-        _LOGGER.debug(
-            "Registered scene controller %s for routing: serial=%s, component=%d, action=CURRENT_SCENE",
-            self.entity_id,
-            self._device_sn,
-            self._component_number,
-        )
-
-    async def async_will_remove_from_hass(self) -> None:
-        """Call when entity is being removed from hass."""
-        # Unregister from routing table
-        routing_key = (
-            self._device_sn,
-            self._component_number,
-            Action.CURRENT_SCENE.value,
-        )
-        self._entry.runtime_data.entity_routing_table.pop(routing_key, None)
+    def get_routing_actions(
+        self,
+    ) -> list[tuple[Action, Callable[[DeviceUpdate], None]]]:
+        """Return the list of (action, handler) tuples for this entity."""
+        return [(Action.CURRENT_SCENE, self._handle_current_scene)]
 
     @property
     def is_on(self) -> bool:
@@ -218,7 +186,7 @@ class LutronQSSceneController(RemoteEntity):
         command = (
             f"#DEVICE,{self._device_sn.sn.decode()},"
             f"{self._component_number},{Action.CURRENT_SCENE.value},{scene}"
-        ).encode("utf-8")
+        ).encode()
 
         _LOGGER.debug("Setting scene to %d: %s", scene, command)
 
@@ -227,20 +195,8 @@ class LutronQSSceneController(RemoteEntity):
         except Exception:
             _LOGGER.exception("Failed to set scene for %s", self.entity_id)
 
-    def handle_update(self, update: DeviceUpdate) -> None:
-        """Handle a device update for this scene controller.
-
-        Called when a ~DEVICE message is received with matching serial/component/action.
-        """
-        # We only care about CURRENT_SCENE actions for scene controllers
-        if update.action != Action.CURRENT_SCENE:
-            _LOGGER.debug(
-                "Scene controller %s ignoring non-CURRENT_SCENE action: %d",
-                self.entity_id,
-                update.action,
-            )
-            return
-
+    def _handle_current_scene(self, update: DeviceUpdate) -> None:
+        """Handle a CURRENT_SCENE update for this scene controller."""
         if not update.value:
             _LOGGER.warning("Received empty value for scene controller %s", self.entity_id)
             return

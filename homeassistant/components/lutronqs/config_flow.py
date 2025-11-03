@@ -11,7 +11,6 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 
 from .const import DEFAULT_PASSWORD, DEFAULT_USERNAME, DOMAIN
 
-
 # Note: There is no known method for automatic discovery of Lutron QSE-CI-NWK-E devices.
 # These devices do not advertise themselves via mDNS/Zeroconf or any other standard
 # discovery protocol. Manual configuration is required.
