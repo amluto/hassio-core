@@ -9,7 +9,7 @@ import logging
 from pylutron_integration import connection as lutron_connection
 from pylutron_integration import devices as lutron_devices
 from pylutron_integration import qse
-from pylutron_integration.devices import SerialNumber
+from pylutron_integration.types import SerialNumber
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
@@ -24,8 +24,7 @@ HUB_FAMILY = b"CONTROL_INTERFACE(6)"
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.REMOTE]
-
+PLATFORMS: list[Platform] = [Platform.COVER, Platform.LIGHT, Platform.REMOTE]
 
 @dataclass
 class LutronQSData:
@@ -34,70 +33,10 @@ class LutronQSData:
     connection: lutron_connection.LutronConnection
     universe: qse.LutronUniverse
     # Maps (serial_number, component, action) to entity reference for routing updates
-    entity_routing_table: dict[tuple[SerialNumber, int, int], Entity]
+    entity_routing_table: dict[tuple[SerialNumber, int, lutron_devices.Action], Entity]
 
 
 type LutronQSConfigEntry = ConfigEntry[LutronQSData]
-
-
-@dataclass
-class DeviceUpdate:
-    """Represents a parsed device update message."""
-
-    serial_number: SerialNumber
-    component: int
-    action: int
-    value: tuple[bytes, ...]
-
-
-def parse_device_update(
-    message: bytes, universe: qse.LutronUniverse
-) -> DeviceUpdate | None:
-    """Parse a ~DEVICE message into a DeviceUpdate.
-
-    Args:
-        message: Raw ~DEVICE message bytes
-        universe: LutronUniverse for resolving device identifiers
-
-    Returns:
-        DeviceUpdate if message was parsed successfully, None otherwise
-    """
-    import re
-
-    # ~DEVICE,<identifier>,<component>,<action>[,<params>]\r\n
-    match = re.fullmatch(
-        rb"~DEVICE,([^,]+),(\d+),(\d+)(?:,([^\r]*))?\r\n", message, re.S
-    )
-    if not match:
-        _LOGGER.debug("Failed to parse device message: %s", message)
-        return None
-
-    device_identifier = match[1]
-    component = int(match[2])
-    action = int(match[3])
-    params_str = match[4] if match[4] else b""
-
-    # Parse parameters (comma-separated values)
-    value = tuple(params_str.split(b",")) if params_str else ()
-
-    # Resolve device identifier to serial number
-    try:
-        sn = SerialNumber(device_identifier)
-        if sn not in universe.devices_by_sn:
-            _LOGGER.debug("Unknown device serial number: %s", sn)
-            return None
-    except ValueError:
-        # Not a serial number, try integration ID
-        if device_identifier in universe.devices_by_iid:
-            sn = universe.devices_by_iid[device_identifier].sn
-        else:
-            _LOGGER.debug("Unknown device identifier: %s", device_identifier)
-            return None
-
-    return DeviceUpdate(
-        serial_number=sn, component=component, action=action, value=value
-    )
-
 
 async def monitor_unsolicited_messages(
     hass: HomeAssistant, entry: LutronQSConfigEntry
@@ -119,9 +58,11 @@ async def monitor_unsolicited_messages(
                 continue
 
             # Parse the message
-            update = parse_device_update(message, universe)
+            update = lutron_devices.decode_device_update(message, universe)
             if update is None:
                 continue
+
+            _LOGGER.debug(f'Received update: {update!r}')
 
             # Look up the entity in the routing table
             routing_key = (update.serial_number, update.component, update.action)
@@ -129,7 +70,7 @@ async def monitor_unsolicited_messages(
 
             if entity is None:
                 _LOGGER.debug(
-                    "No entity registered for device update: serial=%s, component=%d, action=%d",
+                    "No entity registered for device update: serial=%s, component=%d, action=%s",
                     update.serial_number,
                     update.component,
                     update.action,
@@ -137,6 +78,7 @@ async def monitor_unsolicited_messages(
                 continue
 
             # Call the entity's handle_update method
+            # TODO: make this type-check friendly (have an abc or an extra base class for this)
             if hasattr(entity, "handle_update"):
                 entity.handle_update(update)
             else:
@@ -254,28 +196,53 @@ async def async_setup_entry(hass: HomeAssistant, entry: LutronQSConfigEntry) -> 
 
         # TODO: Consider showing a friendlier name based on the DeviceClass?
 
+        # Extract firmware and hardware versions from raw_attrs
+        boot_version = device_details.raw_attrs.get(b"BOOT", b"").decode()
+        code_version = device_details.raw_attrs.get(b"CODE", b"").decode()
+        hw_version = device_details.raw_attrs.get(b"HW", b"").decode()
+
+        # Format software version as "Boot: X Code: Y" if available
+        sw_version = None
+        if boot_version and code_version:
+            sw_version = f"Boot: {boot_version} Code: {code_version}"
+        elif code_version:
+            sw_version = f"Code: {code_version}"
+        elif boot_version:
+            sw_version = f"Boot: {boot_version}"
+
         # Register device in Home Assistant
         device_entry = device_registry.async_get_or_create(
             config_entry_id=entry.entry_id,
             identifiers={(DOMAIN, serial)},
             manufacturer=MANUFACTURER,
             model=f"{device_details.family.decode()} - {device_details.product.decode()}",
-            name=device_details.integration_id.decode() if device_details.integration_id != b"(Not Set)" else serial,
+            name=device_details.integration_id.decode()
+            if device_details.integration_id != b"(Not Set)"
+            else serial,
+            sw_version=sw_version,
+            hw_version=hw_version if hw_version else None,
             via_device=(DOMAIN, hub_sn.sn.decode()) if device_sn != hub_sn else None,
         )
         _LOGGER.info(
-            "Registered device %s (%s): %s",
+            "Registered device %s (%s): %s (sw: %s, hw: %s)",
             serial,
             device_details.family.decode(),
             device_entry.id,
+            sw_version or "unknown",
+            hw_version or "unknown",
         )
+
+        await entry.runtime_data.connection.probe_device(device_details.sn)
 
     # Forward setup to platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Start monitoring unsolicited messages in a background task
-    task = hass.async_create_task(monitor_unsolicited_messages(hass, entry))
-    entry.async_on_unload(task.cancel)
+    entry.async_create_background_task(
+        hass,
+        monitor_unsolicited_messages(hass, entry),
+        name=f"lutronqs-{entry.entry_id}-monitor",
+    )
 
     return True
 

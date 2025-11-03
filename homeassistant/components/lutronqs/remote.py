@@ -11,7 +11,8 @@ from collections.abc import Iterable
 import logging
 from typing import TYPE_CHECKING, Any
 
-from pylutron_integration.devices import Action, SerialNumber
+from pylutron_integration.devices import Action, DeviceUpdate
+from pylutron_integration.types import SerialNumber
 
 from homeassistant.components.remote import ATTR_ACTIVITY, RemoteEntity, RemoteEntityFeature
 from homeassistant.core import HomeAssistant
@@ -20,9 +21,6 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import LutronQSConfigEntry
 from .const import DOMAIN, MANUFACTURER
-
-if TYPE_CHECKING:
-    from . import DeviceUpdate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,7 +117,7 @@ class LutronQSSceneController(RemoteEntity):
         routing_key = (
             self._device_sn,
             self._component_number,
-            Action.CURRENT_SCENE.value,
+            Action.CURRENT_SCENE,
         )
         self._entry.runtime_data.entity_routing_table[routing_key] = self
 
@@ -235,7 +233,7 @@ class LutronQSSceneController(RemoteEntity):
         Called when a ~DEVICE message is received with matching serial/component/action.
         """
         # We only care about CURRENT_SCENE actions for scene controllers
-        if update.action != Action.CURRENT_SCENE.value:
+        if update.action != Action.CURRENT_SCENE:
             _LOGGER.debug(
                 "Scene controller %s ignoring non-CURRENT_SCENE action: %d",
                 self.entity_id,

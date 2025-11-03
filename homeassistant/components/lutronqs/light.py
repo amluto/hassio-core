@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from pylutron_integration.devices import Action, SerialNumber
+from pylutron_integration.devices import Action, DeviceUpdate
+from pylutron_integration.types import SerialNumber
 
 from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEntity
 from homeassistant.core import HomeAssistant
@@ -14,9 +15,6 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import LutronQSConfigEntry
 from .const import DOMAIN, MANUFACTURER
-
-if TYPE_CHECKING:
-    from . import DeviceUpdate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,13 +109,13 @@ class LutronQSLight(LightEntity):
     async def async_added_to_hass(self) -> None:
         """Call when entity is added to hass."""
         # Register this entity in the routing table for LIGHT_LEVEL updates
-        routing_key = (self._device_sn, self._component_number, Action.LIGHT_LEVEL.value)
+        routing_key = (self._device_sn, self._component_number, Action.LIGHT_LEVEL)
         self._entry.runtime_data.entity_routing_table[routing_key] = self
 
     async def async_will_remove_from_hass(self) -> None:
         """Call when entity is being removed from hass."""
         # Unregister from routing table
-        routing_key = (self._device_sn, self._component_number, Action.LIGHT_LEVEL.value)
+        routing_key = (self._device_sn, self._component_number, Action.LIGHT_LEVEL)
         self._entry.runtime_data.entity_routing_table.pop(routing_key, None)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
@@ -162,7 +160,7 @@ class LutronQSLight(LightEntity):
         Called when a ~DEVICE message is received with matching serial/component/action.
         """
         # We only care about LIGHT_LEVEL actions for lights
-        if update.action != Action.LIGHT_LEVEL.value:
+        if update.action != Action.LIGHT_LEVEL:
             _LOGGER.debug(
                 "Light %s ignoring non-LIGHT_LEVEL action: %d",
                 self.entity_id,
