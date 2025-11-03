@@ -14,6 +14,32 @@
           "username": "The username for authentication (default is 'nwk2').",
           "password": "The password for authentication (leave blank if no password is set)."
         }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Lutron QS",
+        "description": "Update the connection details for your Lutron QSE-CI-NWK-E access point.",
+        "data": {
+          "host": "IP address",
+          "username": "Username",
+          "password": "Password"
+        },
+        "data_description": {
+          "host": "The IP address of your Lutron QSE-CI-NWK-E access point.",
+          "username": "The username for authentication (default is 'nwk2').",
+          "password": "The password for authentication (leave blank if no password is set)."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Lutron QS",
+        "description": "The credentials for {host} are no longer valid. Please provide updated credentials.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "The username for authentication (default is 'nwk2').",
+          "password": "The password for authentication (leave blank if no password is set)."
+        }
       }
     },
     "error": {
@@ -22,7 +48,8 @@
       "unknown": "An unexpected error occurred. Please try again."
     },
     "abort": {
-      "already_configured": "This Lutron QS access point is already configured."
+      "already_configured": "This Lutron QS access point is already configured.",
+      "reconfigure_successful": "Reconfiguration was successful."
     }
   }
 }
