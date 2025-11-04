@@ -6,8 +6,8 @@ from collections.abc import Callable
 import logging
 from typing import Any
 
-from pylutron_integration.devices import Action, DeviceUpdate
-from pylutron_integration.types import SerialNumber
+from pylutron_integration.devices import DeviceUpdate
+from pylutron_integration.types import SerialNumber, DeviceAction
 
 from homeassistant.components.cover import (
     ATTR_POSITION,
@@ -152,15 +152,15 @@ class LutronQSShade(LutronQSEntity, CoverEntity):
 
     def get_routing_actions(
         self,
-    ) -> list[tuple[Action, Callable[[DeviceUpdate], None]]]:
+    ) -> list[tuple[DeviceAction, Callable[[DeviceUpdate], None]]]:
         """Return the list of (action, handler) tuples for this entity."""
         # Shades use LIGHT_LEVEL (action 14) to report position
         # and MOTOR_MYSTERY (action 21) to report motion state.
         # (Actually, I don't know what MOTOR_MYSTERY reports, but
-        #  it's nonzero when moving and 0 when stationary.))
+        #  it's nonzero when moving and 0 when stationary.)
         return [
-            (Action.LIGHT_LEVEL, self._handle_position_update),
-            (Action.MOTOR_MYSTERY, self._handle_motion_update),
+            (DeviceAction.LIGHT_LEVEL, self._handle_position_update),
+            (DeviceAction.MOTOR_MYSTERY, self._handle_motion_update),
         ]
 
     @property
@@ -214,17 +214,13 @@ class LutronQSShade(LutronQSEntity, CoverEntity):
         # Position 0 = closed, 100 = open
         level = float(position)
 
-        # Send LIGHT_LEVEL command to device
-        # Format: #DEVICE,serial,component,14,level
-        command = (
-            f"#DEVICE,{self._device_sn.sn.decode()},"
-            f"{self._component_number},{Action.LIGHT_LEVEL.value},{level:.02f}"
-        ).encode()
-
-        _LOGGER.debug("Setting shade position to %d: %s", position, command)
-
         try:
-            await self._entry.runtime_data.connection.raw_query(command)
+            await self._entry.runtime_data.connection.send_device_command(
+                self._device_sn,
+                self._component_number,
+                DeviceAction.LIGHT_LEVEL,
+                [b'%.02f' % level],
+            )
         except Exception:
             _LOGGER.exception("Failed to set shade position for %s", self.entity_id)
 

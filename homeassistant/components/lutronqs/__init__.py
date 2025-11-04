@@ -12,7 +12,7 @@ from pylutron_integration import (
     devices as lutron_devices,
     qse,
 )
-from pylutron_integration.types import SerialNumber
+from pylutron_integration.types import SerialNumber, DeviceAction
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
@@ -36,7 +36,7 @@ class LutronQSData:
     universe: qse.LutronUniverse
     # Maps (serial_number, component, action) to handler method for routing updates
     entity_routing_table: dict[
-        tuple[SerialNumber, int, lutron_devices.Action],
+        tuple[SerialNumber, int, DeviceAction],
         Callable[[lutron_devices.DeviceUpdate], None],
     ]
     # Callbacks for adding entities dynamically (per platform)

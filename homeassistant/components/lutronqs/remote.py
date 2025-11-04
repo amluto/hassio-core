@@ -11,8 +11,8 @@ from collections.abc import Callable, Iterable
 import logging
 from typing import Any
 
-from pylutron_integration.devices import Action, DeviceUpdate
-from pylutron_integration.types import SerialNumber
+from pylutron_integration.devices import DeviceUpdate
+from pylutron_integration.types import SerialNumber, DeviceAction
 
 from homeassistant.components.remote import (
     ATTR_ACTIVITY,
@@ -141,9 +141,9 @@ class LutronQSSceneController(LutronQSEntity, RemoteEntity):
 
     def get_routing_actions(
         self,
-    ) -> list[tuple[Action, Callable[[DeviceUpdate], None]]]:
+    ) -> list[tuple[DeviceAction, Callable[[DeviceUpdate], None]]]:
         """Return the list of (action, handler) tuples for this entity."""
-        return [(Action.CURRENT_SCENE, self._handle_current_scene)]
+        return [(DeviceAction.CURRENT_SCENE, self._handle_current_scene)]
 
     @property
     def is_on(self) -> bool:
@@ -220,17 +220,13 @@ class LutronQSSceneController(LutronQSEntity, RemoteEntity):
         Args:
             scene: Scene number (0-16)
         """
-        # Send CURRENT_SCENE command to device
-        # Format: #DEVICE,serial,component,7,scene
-        command = (
-            f"#DEVICE,{self._device_sn.sn.decode()},"
-            f"{self._component_number},{Action.CURRENT_SCENE.value},{scene}"
-        ).encode()
-
-        _LOGGER.debug("Setting scene to %d: %s", scene, command)
-
         try:
-            await self._entry.runtime_data.connection.raw_query(command)
+            await self._entry.runtime_data.connection.send_device_command(
+                self._device_sn,
+                self._component_number,
+                DeviceAction.CURRENT_SCENE,
+                [str(scene).encode()],
+            )
         except Exception:
             _LOGGER.exception("Failed to set scene for %s", self.entity_id)
 

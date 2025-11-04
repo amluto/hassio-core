@@ -6,8 +6,8 @@ from collections.abc import Callable
 import logging
 from typing import Any
 
-from pylutron_integration.devices import Action, DeviceUpdate
-from pylutron_integration.types import SerialNumber
+from pylutron_integration.devices import DeviceUpdate
+from pylutron_integration.types import SerialNumber, DeviceAction
 
 from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEntity
 from homeassistant.const import Platform
@@ -133,9 +133,9 @@ class LutronQSLight(LutronQSEntity, LightEntity):
 
     def get_routing_actions(
         self,
-    ) -> list[tuple[Action, Callable[[DeviceUpdate], None]]]:
+    ) -> list[tuple[DeviceAction, Callable[[DeviceUpdate], None]]]:
         """Return the list of (action, handler) tuples for this entity."""
-        return [(Action.LIGHT_LEVEL, self._handle_light_level)]
+        return [(DeviceAction.LIGHT_LEVEL, self._handle_light_level)]
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the light."""
@@ -144,32 +144,21 @@ class LutronQSLight(LutronQSEntity, LightEntity):
         # Convert brightness (0-255) to Lutron level (0-100)
         level = ((brightness / 255.0) * 100.0)
 
-        # Send LIGHT_LEVEL command to device
-        # Format: #DEVICE,serial,component,14,level
-        command = (
-            f"#DEVICE,{self._device_sn.sn.decode()},"
-            f"{self._component_number},{Action.LIGHT_LEVEL.value},{level:.02f}"
-        ).encode()
-
-        _LOGGER.info("Turning on light: %r", command)
-
         try:
-            await self._entry.runtime_data.connection.raw_query(command)
+            await self._entry.runtime_data.connection.send_device_command(self._device_sn, self._component_number,
+                                                                           DeviceAction.LIGHT_LEVEL, [b'%.02f' % level])
         except Exception:
             _LOGGER.exception("Failed to turn on light %s", self.entity_id)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the light."""
-        # Send LIGHT_LEVEL command with level 0
-        command = (
-            f"#DEVICE,{self._device_sn.sn.decode()},"
-            f"{self._component_number},{Action.LIGHT_LEVEL.value},0"
-        ).encode()
-
-        _LOGGER.info("Turning off light: %s", command)
-
         try:
-            await self._entry.runtime_data.connection.raw_query(command)
+            await self._entry.runtime_data.connection.send_device_command(
+                self._device_sn,
+                self._component_number,
+                DeviceAction.LIGHT_LEVEL,
+                [b'0'],
+            )
         except Exception:
             _LOGGER.exception("Failed to turn off light %s", self.entity_id)
 

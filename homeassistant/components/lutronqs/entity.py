@@ -6,8 +6,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 import logging
 
-from pylutron_integration.devices import Action, DeviceUpdate
-from pylutron_integration.types import SerialNumber
+from pylutron_integration.devices import DeviceUpdate
+from pylutron_integration.types import SerialNumber, DeviceAction
 
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
@@ -79,5 +79,5 @@ class LutronQSEntity(Entity, ABC):
     @abstractmethod
     def get_routing_actions(
         self,
-    ) -> list[tuple[Action, Callable[[DeviceUpdate], None]]]:
+    ) -> list[tuple[DeviceAction, Callable[[DeviceUpdate], None]]]:
         """Return the list of (action, handler) tuples for this entity."""
