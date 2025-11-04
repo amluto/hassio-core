@@ -15,6 +15,7 @@ from homeassistant.components.cover import (
     CoverEntity,
     CoverEntityFeature,
 )
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -35,11 +36,18 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Lutron QS shades from a config entry."""
-    universe = entry.runtime_data.universe
-    entities: list[LutronQSShade] = []
+    # Track which devices we've already created entities for
+    known_devices: set[SerialNumber] = set()
 
-    # Iterate over all devices and create shade entities
-    for device_sn, device_details in universe.devices_by_sn.items():
+    def create_shade_entities(device_sn: SerialNumber) -> list[LutronQSShade]:
+        """Create shade entities for a device."""
+        universe = entry.runtime_data.universe
+        device_details = universe.devices_by_sn.get(device_sn)
+        if not device_details:
+            return []
+
+        entities: list[LutronQSShade] = []
+
         # Only handle SHADES(3) family
         if device_details.family == b"SHADES(3)":
             # Get the SHADE component group
@@ -47,16 +55,16 @@ async def async_setup_entry(
 
             device_class = FAMILY_TO_CLASS.get(device_details.family)
             if not device_class:
-                continue
+                return []
 
             shade_group = device_class.groups.get("SHADE")
             if not shade_group:
-                continue
+                return []
 
             # Shade component is always component 0
             component_number = shade_group.component_number(1)
             if component_number is None:
-                continue
+                return []
 
             # Determine cover device class from product type
             cover_device_class = PRODUCT_TO_DEVICE_CLASS.get(
@@ -73,6 +81,37 @@ async def async_setup_entry(
                 cover_device_class,
             )
             entities.append(entity)
+
+        return entities
+
+    async def discover_new_devices() -> None:
+        """Check for new devices and add entities for them."""
+        universe = entry.runtime_data.universe
+        current_devices = set(universe.devices_by_sn.keys())
+        new_devices = current_devices - known_devices
+
+        if new_devices:
+            _LOGGER.info("Discovered %d new shade devices", len(new_devices))
+            new_entities: list[LutronQSShade] = []
+            for device_sn in new_devices:
+                entities = create_shade_entities(device_sn)
+                new_entities.extend(entities)
+                known_devices.add(device_sn)
+
+            if new_entities:
+                async_add_entities(new_entities, True)
+
+    # Store the callback for later dynamic discovery
+    entry.runtime_data.add_entities_callbacks[Platform.COVER] = async_add_entities
+    entry.runtime_data.discover_new_devices[Platform.COVER] = discover_new_devices
+
+    # Initial setup: create entities for all current devices
+    universe = entry.runtime_data.universe
+    entities: list[LutronQSShade] = []
+    for device_sn in universe.devices_by_sn:
+        device_entities = create_shade_entities(device_sn)
+        entities.extend(device_entities)
+        known_devices.add(device_sn)
 
     async_add_entities(entities, True)
 
@@ -116,7 +155,9 @@ class LutronQSShade(LutronQSEntity, CoverEntity):
     ) -> list[tuple[Action, Callable[[DeviceUpdate], None]]]:
         """Return the list of (action, handler) tuples for this entity."""
         # Shades use LIGHT_LEVEL (action 14) to report position
-        # and MOTOR_MYSTERY (action 21) to report motion state
+        # and MOTOR_MYSTERY (action 21) to report motion state.
+        # (Actually, I don't know what MOTOR_MYSTERY reports, but
+        #  it's nonzero when moving and 0 when stationary.))
         return [
             (Action.LIGHT_LEVEL, self._handle_position_update),
             (Action.MOTOR_MYSTERY, self._handle_motion_update),

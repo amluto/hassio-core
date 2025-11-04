@@ -45,6 +45,15 @@ class LutronQSEntity(Entity, ABC):
             identifiers={(DOMAIN, serial)},
         )
 
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available.
+
+        Entity is unavailable if its device is no longer present in the universe.
+        This handles cases where devices are powered down or removed from the network.
+        """
+        return self._device_sn in self._entry.runtime_data.universe.devices_by_sn
+
     async def async_added_to_hass(self) -> None:
         """Call when entity is added to hass."""
         # Register action handlers in the routing table

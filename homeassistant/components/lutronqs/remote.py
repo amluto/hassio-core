@@ -19,6 +19,7 @@ from homeassistant.components.remote import (
     RemoteEntity,
     RemoteEntityFeature,
 )
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -42,11 +43,18 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Lutron QS scene controllers from a config entry."""
-    universe = entry.runtime_data.universe
-    entities: list[LutronQSSceneController] = []
+    # Track which devices we've already created entities for
+    known_devices: set[SerialNumber] = set()
 
-    # Iterate over all devices and create scene controller remotes
-    for device_sn, device_details in universe.devices_by_sn.items():
+    def create_scene_controller_entities(device_sn: SerialNumber) -> list[LutronQSSceneController]:
+        """Create scene controller entities for a device."""
+        universe = entry.runtime_data.universe
+        device_details = universe.devices_by_sn.get(device_sn)
+        if not device_details:
+            return []
+
+        entities: list[LutronQSSceneController] = []
+
         # Only handle GrafikEyeQS for now
         if device_details.family == b"GRAFIK_EYE(2)":
             # Get the SCENE_CONTROLLER component group
@@ -54,16 +62,16 @@ async def async_setup_entry(
 
             device_class = FAMILY_TO_CLASS.get(device_details.family)
             if not device_class:
-                continue
+                return []
 
             scene_controller_group = device_class.groups.get("SCENE_CONTROLLER")
             if not scene_controller_group:
-                continue
+                return []
 
             # Scene controller has exactly one component (component number 141)
             component_number = scene_controller_group.component_number(1)
             if component_number is None:
-                continue
+                return []
 
             entity = LutronQSSceneController(
                 entry,
@@ -74,6 +82,37 @@ async def async_setup_entry(
                 else str(device_sn),
             )
             entities.append(entity)
+
+        return entities
+
+    async def discover_new_devices() -> None:
+        """Check for new devices and add entities for them."""
+        universe = entry.runtime_data.universe
+        current_devices = set(universe.devices_by_sn.keys())
+        new_devices = current_devices - known_devices
+
+        if new_devices:
+            _LOGGER.info("Discovered %d new scene controller devices", len(new_devices))
+            new_entities: list[LutronQSSceneController] = []
+            for device_sn in new_devices:
+                entities = create_scene_controller_entities(device_sn)
+                new_entities.extend(entities)
+                known_devices.add(device_sn)
+
+            if new_entities:
+                async_add_entities(new_entities, True)
+
+    # Store the callback for later dynamic discovery
+    entry.runtime_data.add_entities_callbacks[Platform.REMOTE] = async_add_entities
+    entry.runtime_data.discover_new_devices[Platform.REMOTE] = discover_new_devices
+
+    # Initial setup: create entities for all current devices
+    universe = entry.runtime_data.universe
+    entities: list[LutronQSSceneController] = []
+    for device_sn in universe.devices_by_sn:
+        device_entities = create_scene_controller_entities(device_sn)
+        entities.extend(device_entities)
+        known_devices.add(device_sn)
 
     async_add_entities(entities, True)
 
