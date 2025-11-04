@@ -43,11 +43,16 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Lutron QS scene controllers from a config entry."""
-    # Track which devices we've already created entities for
-    known_devices: set[SerialNumber] = set()
 
     def create_scene_controller_entities(device_sn: SerialNumber) -> list[LutronQSSceneController]:
-        """Create scene controller entities for a device."""
+        """Create scene controller entities for a device.
+
+        Args:
+            device_sn: Serial number of the device
+
+        Returns:
+            List of scene controller entities for this device (may be empty)
+        """
         universe = entry.runtime_data.universe
         device_details = universe.devices_by_sn.get(device_sn)
         if not device_details:
@@ -83,38 +88,14 @@ async def async_setup_entry(
             )
             entities.append(entity)
 
+        # Actually add the entities using the callback
+        if entities:
+            async_add_entities(entities, True)
+
         return entities
 
-    async def discover_new_devices() -> None:
-        """Check for new devices and add entities for them."""
-        universe = entry.runtime_data.universe
-        current_devices = set(universe.devices_by_sn.keys())
-        new_devices = current_devices - known_devices
-
-        if new_devices:
-            _LOGGER.info("Discovered %d new scene controller devices", len(new_devices))
-            new_entities: list[LutronQSSceneController] = []
-            for device_sn in new_devices:
-                entities = create_scene_controller_entities(device_sn)
-                new_entities.extend(entities)
-                known_devices.add(device_sn)
-
-            if new_entities:
-                async_add_entities(new_entities, True)
-
-    # Store the callback for later dynamic discovery
-    entry.runtime_data.add_entities_callbacks[Platform.REMOTE] = async_add_entities
-    entry.runtime_data.discover_new_devices[Platform.REMOTE] = discover_new_devices
-
-    # Initial setup: create entities for all current devices
-    universe = entry.runtime_data.universe
-    entities: list[LutronQSSceneController] = []
-    for device_sn in universe.devices_by_sn:
-        device_entities = create_scene_controller_entities(device_sn)
-        entities.extend(device_entities)
-        known_devices.add(device_sn)
-
-    async_add_entities(entities, True)
+    # Register the factory function - process_device_updates will call this for each device
+    entry.runtime_data.entity_factories[Platform.REMOTE] = create_scene_controller_entities
 
 
 class LutronQSSceneController(LutronQSEntity, RemoteEntity):

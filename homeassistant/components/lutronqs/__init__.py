@@ -39,27 +39,31 @@ class LutronQSData:
         tuple[SerialNumber, int, DeviceAction],
         Callable[[lutron_devices.DeviceUpdate], None],
     ]
-    # Callbacks for adding entities dynamically (per platform)
-    add_entities_callbacks: dict[Platform, Callable] = None  # type: ignore[assignment]
-    # Discovery functions to call when new devices appear (per platform)
-    discover_new_devices: dict[Platform, Callable] = None  # type: ignore[assignment]
+    # Factory functions to create entities for a device (per platform)
+    # Each function takes (device_sn: SerialNumber) and returns list of entities
+    entity_factories: dict[Platform, Callable[[SerialNumber], list]] = None  # type: ignore[assignment]
+    # Hub device serial number (determined once during initial setup)
+    hub_sn: SerialNumber | None = None
+    # Set of device serial numbers that have been registered
+    registered_devices: set[SerialNumber] = None  # type: ignore[assignment]
 
 
 type LutronQSConfigEntry = ConfigEntry[LutronQSData]
 
-
-async def enumerate_and_discover_devices(
+# TODO: This name is not descriptive.  It should be
+# enumerate_and_update_status.
+async def process_device_updates(
     hass: HomeAssistant,
     entry: LutronQSConfigEntry,
-    initial_setup: bool = False,
 ) -> None:
-    """Enumerate devices from the Lutron system and handle discovery.
+    """Process device updates: enumerate universe and update device/entity states.
 
-    Args:
-        hass: Home Assistant instance
-        entry: Config entry
-        initial_setup: If True, register devices in device registry and probe them.
-                      If False, only update universe and trigger entity discovery.
+    This function:
+    1. Enumerates the universe to get current device list
+    2. On first run: determines which device is the hub
+    3. For new devices: registers them in device registry and creates entities
+    4. For existing devices: ensures they're marked available
+    5. For missing devices: entities automatically become unavailable (via available property)
     """
     # Enumerate the universe
     new_universe = await qse.enumerate_universe(entry.runtime_data.connection)
@@ -73,11 +77,8 @@ async def enumerate_and_discover_devices(
     # Update the universe in runtime data
     entry.runtime_data.universe = new_universe
 
-    if initial_setup:
-        # Initial setup: register all devices in device registry
-        device_registry = dr.async_get(hass)
-
-        # Identify hub device(s) by family
+    # Determine hub device serial number if not already set
+    if entry.runtime_data.hub_sn is None:
         hub_devices = [
             (sn, details)
             for sn, details in new_universe.devices_by_sn.items()
@@ -93,21 +94,25 @@ async def enumerate_and_discover_devices(
 
         # Use first hub if found, otherwise use first device as fallback
         if hub_devices:
-            hub_sn, hub_details = hub_devices[0]
+            entry.runtime_data.hub_sn = hub_devices[0][0]
         else:
             _LOGGER.warning(
                 "No hub device found with family %s, using first device as hub",
                 HUB_FAMILY.decode(),
             )
-            hub_sn, hub_details = next(iter(new_universe.devices_by_sn.items()))
+            entry.runtime_data.hub_sn = next(iter(new_universe.devices_by_sn.keys()))
 
-        _LOGGER.info("Starting to register devices")
+    device_registry = dr.async_get(hass)
 
-        # Register all discovered devices
-        for device_sn, device_details in new_universe.devices_by_sn.items():
-            serial = device_details.sn.sn.decode()
+    # Process each device in the current universe
+    for device_sn, device_details in new_universe.devices_by_sn.items():
+        serial = device_details.sn.sn.decode()
 
-            # Resolve device to DeviceClass
+        # Check if this is a new device
+        if device_sn not in entry.runtime_data.registered_devices:
+            _LOGGER.info("Discovered new device %s", serial)
+
+            # Resolve device to DeviceClass for logging
             device_class = lutron_devices.FAMILY_TO_CLASS.get(device_details.family)
             if device_class:
                 _LOGGER.debug(
@@ -149,7 +154,11 @@ async def enumerate_and_discover_devices(
                 else serial,
                 sw_version=sw_version,
                 hw_version=hw_version if hw_version else None,
-                via_device=(DOMAIN, hub_sn.sn.decode()) if device_sn != hub_sn else None,
+                via_device=(
+                    (DOMAIN, entry.runtime_data.hub_sn.sn.decode())
+                    if device_sn != entry.runtime_data.hub_sn
+                    else None
+                ),
             )
             _LOGGER.info(
                 "Registered device %s (%s): %s (sw: %s, hw: %s)",
@@ -160,18 +169,29 @@ async def enumerate_and_discover_devices(
                 hw_version or "unknown",
             )
 
-            # Probe each device
+            # Probe the device
+            # TODO: this should happen every time a device appears or a connection
+            # is reset -- probing causes us to learn the state of the device.
             await entry.runtime_data.connection.probe_device(device_details.sn)
 
-    else:
-        # Not initial setup: trigger entity discovery on all platforms
-        for platform, discover_func in entry.runtime_data.discover_new_devices.items():
-            try:
-                await discover_func()
-            except Exception:
-                _LOGGER.exception(
-                    "Error during device discovery for platform %s", platform
-                )
+            # Create entities for this device using the factory functions
+            for platform, factory in entry.runtime_data.entity_factories.items():
+                try:
+                    entities = factory(device_sn)
+                    if entities:
+                        _LOGGER.debug(
+                            "Creating %d %s entities for device %s",
+                            len(entities),
+                            platform,
+                            serial,
+                        )
+                except Exception:
+                    _LOGGER.exception(
+                        "Error creating %s entities for device %s", platform, serial
+                    )
+
+            # Mark device as registered
+            entry.runtime_data.registered_devices.add(device_sn)
 
 
 async def connection_monitor(hass: HomeAssistant, entry: LutronQSConfigEntry) -> None:
@@ -194,7 +214,7 @@ async def connection_monitor(hass: HomeAssistant, entry: LutronQSConfigEntry) ->
         try:
             # Re-enumerate the universe to detect device changes
             async with asyncio.timeout(10):
-                await enumerate_and_discover_devices(hass, entry, initial_setup=False)
+                await process_device_updates(hass, entry)
 
             # Reset backoff on success
             backoff_index = 0
@@ -247,7 +267,7 @@ async def connection_monitor(hass: HomeAssistant, entry: LutronQSConfigEntry) ->
                         entry.runtime_data.connection = conn
 
                         # Re-enumerate universe and trigger discovery
-                        await enumerate_and_discover_devices(hass, entry, initial_setup=False)
+                        await process_device_updates(hass, entry)
 
                         _LOGGER.info(
                             "Successfully reconnected to Lutron QS at %s",
@@ -363,25 +383,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: LutronQSConfigEntry) -> 
     except (TimeoutError, OSError) as err:
         raise ConfigEntryNotReady(f"Connection failed during login to {host}") from err
 
-    # Store runtime data with empty routing table (will be populated by platforms)
-    # Note: universe will be populated by enumerate_and_discover_devices below
+    # Store runtime data (will be populated by platforms and enumeration)
     entry.runtime_data = LutronQSData(
         connection=conn,
-        universe=None,  # Will be set immediately below
+        universe=None,  # Will be set by process_device_updates
         entity_routing_table={},
-        add_entities_callbacks={},
-        discover_new_devices={},
+        entity_factories={},
+        hub_sn=None,  # Will be determined on first enumeration
+        registered_devices=set(),
     )
 
-    # Enumerate all devices and register them in the device registry
+    # Forward setup to platforms FIRST - this registers the entity factory callbacks
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Now enumerate devices and create entities using the registered factories
     try:
-        await enumerate_and_discover_devices(hass, entry, initial_setup=True)
+        await process_device_updates(hass, entry)
     except (TimeoutError, OSError, lutron_connection.ProtocolError) as err:
         await conn.disconnect()
         raise ConfigEntryNotReady(f"Failed to enumerate devices on {host}") from err
-
-    # Forward setup to platforms
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Start monitoring unsolicited messages in a background task
     entry.async_create_background_task(
