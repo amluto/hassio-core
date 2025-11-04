@@ -123,6 +123,7 @@ class LutronQSShade(LutronQSEntity, CoverEntity):
         CoverEntityFeature.OPEN
         | CoverEntityFeature.CLOSE
         | CoverEntityFeature.SET_POSITION
+        | CoverEntityFeature.STOP
     )
 
     def __init__(
@@ -223,6 +224,17 @@ class LutronQSShade(LutronQSEntity, CoverEntity):
             )
         except Exception:
             _LOGGER.exception("Failed to set shade position for %s", self.entity_id)
+
+    async def async_stop_cover(self, **kwargs: Any) -> None:
+        try:
+            await self._entry.runtime_data.connection.send_device_command(
+                self._device_sn,
+                self._component_number,
+                DeviceAction.STOP_RAISING_LOWERING,
+                []
+            )
+        except Exception:
+            _LOGGER.exception("Failed to stop shade for %s", self.entity_id)
 
     def _handle_position_update(self, update: DeviceUpdate) -> None:
         """Handle a LIGHT_LEVEL (position) update."""
