@@ -37,11 +37,18 @@ async def async_setup_entry(
 ) -> None:
     """Set up Lutron QS shades from a config entry."""
 
-    def create_shade_entities(device_sn: SerialNumber) -> list[LutronQSShade]:
+    def create_shade_entities(
+        device_sn: SerialNumber, probe_results: list[DeviceUpdate] | None
+    ) -> list[LutronQSEntity]:
         """Create shade entities for a device.
+
+        Only creates shade entity if component 0 appears in probe results.
+        This avoids creating a nonexistent shade entity for shade power supplies,
+        which identify themselves as shades but don't have actual shade components.
 
         Args:
             device_sn: Serial number of the device
+            probe_results: Probe results from the device, used to verify shade component exists
 
         Returns:
             List of shade entities for this device (may be empty)
@@ -51,24 +58,27 @@ async def async_setup_entry(
         if not device_details:
             return []
 
-        entities: list[LutronQSShade] = []
+        entities: list[LutronQSEntity] = []
 
         # Only handle SHADES(3) family
         if device_details.family == b"SHADES(3)":
-            # Get the SHADE component group
-            from pylutron_integration.devices import FAMILY_TO_CLASS
-
-            device_class = FAMILY_TO_CLASS.get(device_details.family)
-            if not device_class:
-                return []
-
-            shade_group = device_class.groups.get("SHADE")
-            if not shade_group:
-                return []
-
             # Shade component is always component 0
-            component_number = shade_group.component_number(1)
-            if component_number is None:
+            component_number = 0
+
+            # Only create shade entity if component 0 appears in probe results
+            # This filters out shade power supplies which identify as shades but have no shade component
+            component_exists = False
+            if probe_results:
+                for update in probe_results:
+                    if update.component == component_number:
+                        component_exists = True
+                        break
+
+            if not component_exists:
+                _LOGGER.info(
+                    "Skipping shade entity for device %s - component 0 not found in probe results (likely a power supply)",
+                    device_sn.sn.decode(),
+                )
                 return []
 
             # Determine cover device class from product type

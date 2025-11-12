@@ -347,6 +347,7 @@ homeassistant.components.london_underground.*
 homeassistant.components.lookin.*
 homeassistant.components.lovelace.*
 homeassistant.components.luftdaten.*
+homeassistant.components.lutronqs.*
 homeassistant.components.lunatone.*
 homeassistant.components.lutron.*
 homeassistant.components.madvr.*

@@ -35,7 +35,7 @@ WORKDIR /usr/src
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
 USER vscode
 
 ENV VIRTUAL_ENV="/home/vscode/.local/ha-venv"

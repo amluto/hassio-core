@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 import logging
+from typing import TYPE_CHECKING
 
 from pylutron_integration.devices import DeviceUpdate
 from pylutron_integration.types import SerialNumber, DeviceAction
@@ -12,8 +13,10 @@ from pylutron_integration.types import SerialNumber, DeviceAction
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 
-from . import LutronQSConfigEntry
 from .const import DOMAIN
+
+if TYPE_CHECKING:
+    from . import LutronQSConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,8 +32,16 @@ class LutronQSEntity(Entity, ABC):
         entry: LutronQSConfigEntry,
         device_sn: SerialNumber,
         component_number: int,
+        unique_id_suffix: str | None = None,
     ) -> None:
-        """Initialize the Lutron QS entity."""
+        """Initialize the Lutron QS entity.
+
+        Args:
+            entry: Config entry
+            device_sn: Device serial number
+            component_number: Component number
+            unique_id_suffix: Optional suffix for unique ID (e.g., "scene")
+        """
         self._entry = entry
         self._device_sn = device_sn
         self._component_number = component_number
@@ -38,7 +49,11 @@ class LutronQSEntity(Entity, ABC):
         serial = device_sn.sn.decode()
 
         # Set unique ID based on serial number and component number
-        self._attr_unique_id = f"{serial}_{component_number}"
+        # Format: [serial]-[component] or [serial]-[component]-[suffix]
+        if unique_id_suffix:
+            self._attr_unique_id = f"{serial}-{component_number}-{unique_id_suffix}"
+        else:
+            self._attr_unique_id = f"{serial}-{component_number}"
 
         # Set device info to link entity to device
         self._attr_device_info = DeviceInfo(

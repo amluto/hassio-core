@@ -44,11 +44,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up Lutron QS scene controllers from a config entry."""
 
-    def create_scene_controller_entities(device_sn: SerialNumber) -> list[LutronQSSceneController]:
+    def create_scene_controller_entities(
+        device_sn: SerialNumber, probe_results: list[DeviceUpdate] | None
+    ) -> list[LutronQSEntity]:
         """Create scene controller entities for a device.
 
         Args:
             device_sn: Serial number of the device
+            probe_results: Probe results from the device (unused for scene controllers currently)
 
         Returns:
             List of scene controller entities for this device (may be empty)
@@ -58,7 +61,7 @@ async def async_setup_entry(
         if not device_details:
             return []
 
-        entities: list[LutronQSSceneController] = []
+        entities: list[LutronQSEntity] = []
 
         # Only handle GrafikEyeQS for now
         if device_details.family == b"GRAFIK_EYE(2)":
@@ -111,7 +114,7 @@ class LutronQSSceneController(LutronQSEntity, RemoteEntity):
         device_name: str,
     ) -> None:
         """Initialize a Lutron QS scene controller."""
-        super().__init__(entry, device_sn, component_number)
+        super().__init__(entry, device_sn, component_number, unique_id_suffix="scene")
         self._device_name = device_name
 
         # Entity name: "Scene controller"

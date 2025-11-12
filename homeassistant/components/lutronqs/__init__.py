@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 
 from pylutron_integration import (
@@ -21,12 +21,13 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN, MANUFACTURER, MODEL_HUB
+from .entity import LutronQSEntity
 
 HUB_FAMILY = b"CONTROL_INTERFACE(6)"
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.COVER, Platform.LIGHT, Platform.REMOTE]
+PLATFORMS: list[Platform] = [Platform.COVER, Platform.EVENT, Platform.LIGHT, Platform.REMOTE]
 
 @dataclass
 class LutronQSData:
@@ -38,14 +39,19 @@ class LutronQSData:
     entity_routing_table: dict[
         tuple[SerialNumber, int, DeviceAction],
         Callable[[lutron_devices.DeviceUpdate], None],
-    ]
+    ] = field(default_factory=dict)
+    # Maps device serial number to list of entities for that device
+    entities_by_device: dict[SerialNumber, list[LutronQSEntity]] = field(default_factory=dict)
     # Factory functions to create entities for a device (per platform)
-    # Each function takes (device_sn: SerialNumber) and returns list of entities
-    entity_factories: dict[Platform, Callable[[SerialNumber], list]] = None  # type: ignore[assignment]
+    # Each function takes (device_sn: SerialNumber, probe_results: list[DeviceUpdate] | None) and returns list of entities
+    entity_factories: dict[
+        Platform,
+        Callable[[SerialNumber, list[lutron_devices.DeviceUpdate] | None], list[LutronQSEntity]],
+    ] = field(default_factory=dict)
     # Hub device serial number (determined once during initial setup)
     hub_sn: SerialNumber | None = None
     # Set of device serial numbers that have been registered
-    registered_devices: set[SerialNumber] = None  # type: ignore[assignment]
+    registered_devices: set[SerialNumber] = field(default_factory=set)
 
 
 type LutronQSConfigEntry = ConfigEntry[LutronQSData]
@@ -73,6 +79,20 @@ async def process_device_updates(
         entry.data[CONF_HOST],
         len(new_universe.devices_by_sn),
     )
+
+    # Track which devices appeared/disappeared for availability updates
+    old_universe = entry.runtime_data.universe
+    old_device_sns = set(old_universe.devices_by_sn.keys())
+    new_device_sns = set(new_universe.devices_by_sn.keys())
+
+    # On first run, old_device_sns will be empty (universe starts empty)
+    # Only calculate differences on subsequent runs when old_device_sns is non-empty
+    if old_device_sns:
+        appeared_devices = new_device_sns - old_device_sns
+        disappeared_devices = old_device_sns - new_device_sns
+    else:
+        appeared_devices = set()
+        disappeared_devices = set()
 
     # Update the universe in runtime data
     entry.runtime_data.universe = new_universe
@@ -169,16 +189,26 @@ async def process_device_updates(
                 hw_version or "unknown",
             )
 
-            # Probe the device
-            # TODO: this should happen every time a device appears or a connection
-            # is reset -- probing causes us to learn the state of the device.
-            await entry.runtime_data.connection.probe_device(device_details.sn)
+            # Probe the device to learn its state and discover which components exist
+            probe_results = await lutron_devices.probe_device(
+                entry.runtime_data.connection,
+                entry.runtime_data.universe.iidmap,
+                device_sn
+            )
+            _LOGGER.debug(
+                "Probed device %s, received %d component updates",
+                serial,
+                len(probe_results),
+            )
 
             # Create entities for this device using the factory functions
+            # Pass probe results so factories can determine which entities to create
+            device_entities = []
             for platform, factory in entry.runtime_data.entity_factories.items():
                 try:
-                    entities = factory(device_sn)
+                    entities = factory(device_sn, probe_results)
                     if entities:
+                        device_entities.extend(entities)
                         _LOGGER.debug(
                             "Creating %d %s entities for device %s",
                             len(entities),
@@ -190,8 +220,47 @@ async def process_device_updates(
                         "Error creating %s entities for device %s", platform, serial
                     )
 
+            # Store entity references for this device
+            entry.runtime_data.entities_by_device[device_sn] = device_entities
+
             # Mark device as registered
             entry.runtime_data.registered_devices.add(device_sn)
+
+    # Handle devices that appeared (came back online or reconnected after reset)
+    for device_sn in appeared_devices:
+        serial = device_sn.sn.decode()
+        # Only log for devices that were previously registered (came back)
+        # New devices were already logged above
+        if device_sn in entry.runtime_data.registered_devices:
+            _LOGGER.info("Device %s came back online", serial)
+
+            # Probe device to learn its current state
+            probe_results = await lutron_devices.probe_device(
+                entry.runtime_data.connection,
+                entry.runtime_data.universe.iidmap,
+                device_sn
+            )
+
+            # Feed probe results through handlers to update entity state BEFORE marking available
+            # This prevents stale values from briefly appearing when the device comes back online
+            for update in probe_results:
+                routing_key = (update.serial_number, update.component, update.action)
+                handler = entry.runtime_data.entity_routing_table.get(routing_key)
+                if handler:
+                    handler(update)
+
+            # Now trigger availability update for all entities of this device
+            for entity in entry.runtime_data.entities_by_device.get(device_sn, []):
+                entity.async_write_ha_state()
+
+    # Handle devices that disappeared (went offline)
+    for device_sn in disappeared_devices:
+        serial = device_sn.sn.decode()
+        _LOGGER.info("Device %s went offline", serial)
+
+        # Trigger state update for all entities of this device to mark unavailable
+        for entity in entry.runtime_data.entities_by_device.get(device_sn, []):
+            entity.async_write_ha_state()
 
 
 async def connection_monitor(hass: HomeAssistant, entry: LutronQSConfigEntry) -> None:
@@ -307,22 +376,21 @@ async def monitor_unsolicited_messages(
     """Monitor unsolicited messages from the Lutron connection and route to entities."""
     _LOGGER.debug("Starting unsolicited message monitoring")
     conn = entry.runtime_data.connection
-    universe = entry.runtime_data.universe
 
     try:
         while True:
             # Read one unsolicited message
             message = await conn.read_unsolicited()
-            _LOGGER.debug(f"Received unsolicited message {message!r}")
 
             # Only process ~DEVICE messages
             if not message.startswith(b"~DEVICE,"):
                 _LOGGER.debug("Ignoring non-device message: %s", message)
                 continue
 
-            # Parse the message
-            update = lutron_devices.decode_device_update(message, universe)
+            # Parse the message (use current universe to get up-to-date iidmap)
+            update = lutron_devices.decode_device_update(message, entry.runtime_data.universe.iidmap)
             if update is None:
+                _LOGGER.debug(f"Unhandled unsolicited message {message!r}")
                 continue
 
             _LOGGER.debug(f'Received update: {update!r}')
@@ -386,11 +454,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: LutronQSConfigEntry) -> 
     # Store runtime data (will be populated by platforms and enumeration)
     entry.runtime_data = LutronQSData(
         connection=conn,
-        universe=None,  # Will be set by process_device_updates
-        entity_routing_table={},
-        entity_factories={},
+        universe=qse.LutronUniverse(),  # Will be populated by process_device_updates
         hub_sn=None,  # Will be determined on first enumeration
-        registered_devices=set(),
     )
 
     # Forward setup to platforms FIRST - this registers the entity factory callbacks
