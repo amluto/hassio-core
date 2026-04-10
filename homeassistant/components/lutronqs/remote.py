@@ -11,8 +11,8 @@ from collections.abc import Callable, Iterable
 import logging
 from typing import Any
 
-from pylutron_integration.devices import DeviceUpdate
-from pylutron_integration.types import SerialNumber, DeviceAction
+from lutron_integration.devices import DeviceUpdate
+from lutron_integration.types import SerialNumber, DeviceAction
 
 from homeassistant.components.remote import (
     ATTR_ACTIVITY,
@@ -66,7 +66,7 @@ async def async_setup_entry(
         # Only handle GrafikEyeQS for now
         if device_details.family == b"GRAFIK_EYE(2)":
             # Get the SCENE_CONTROLLER component group
-            from pylutron_integration.devices import FAMILY_TO_CLASS
+            from lutron_integration.devices import FAMILY_TO_CLASS
 
             device_class = FAMILY_TO_CLASS.get(device_details.family)
             if not device_class:

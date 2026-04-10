@@ -7,8 +7,8 @@ from collections.abc import Callable
 import logging
 from typing import TYPE_CHECKING
 
-from pylutron_integration.devices import DeviceUpdate
-from pylutron_integration.types import SerialNumber, DeviceAction
+from lutron_integration.devices import DeviceUpdate
+from lutron_integration.types import SerialNumber, DeviceAction
 
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity

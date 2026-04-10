@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from pylutron_integration import connection as lutron_connection
+from lutron_integration import connection as lutron_connection
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult

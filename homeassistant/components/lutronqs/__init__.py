@@ -7,12 +7,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 import logging
 
-from pylutron_integration import (
+from lutron_integration import (
     connection as lutron_connection,
     devices as lutron_devices,
     qse,
 )
-from pylutron_integration.types import SerialNumber, DeviceAction
+from lutron_integration.types import SerialNumber, DeviceAction
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform

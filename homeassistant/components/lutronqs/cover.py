@@ -6,8 +6,8 @@ from collections.abc import Callable
 import logging
 from typing import Any
 
-from pylutron_integration.devices import DeviceUpdate
-from pylutron_integration.types import SerialNumber, DeviceAction
+from lutron_integration.devices import DeviceUpdate
+from lutron_integration.types import SerialNumber, DeviceAction
 
 from homeassistant.components.cover import (
     ATTR_POSITION,
