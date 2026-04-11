@@ -52,6 +52,9 @@ class LutronQSData:
     hub_sn: SerialNumber | None = None
     # Set of device serial numbers that have been registered
     registered_devices: set[SerialNumber] = field(default_factory=set)
+    # Signaled when the connection is known to be broken.
+    connection_lost_event: asyncio.Event = field(default_factory=asyncio.Event)
+    unsolicited_task: asyncio.Task[None] | None = None
 
 
 type LutronQSConfigEntry = ConfigEntry[LutronQSData]
@@ -91,7 +94,11 @@ async def process_device_updates(
         appeared_devices = new_device_sns - old_device_sns
         disappeared_devices = old_device_sns - new_device_sns
     else:
-        appeared_devices = set()
+        appeared_devices = {
+            device_sn
+            for device_sn in new_device_sns
+            if device_sn in entry.runtime_data.registered_devices
+        }
         disappeared_devices = set()
 
     # Update the universe in runtime data
@@ -263,6 +270,34 @@ async def process_device_updates(
             entity.async_write_ha_state()
 
 
+def _mark_all_entities_unavailable(entry: LutronQSConfigEntry) -> None:
+    """Mark all known entities unavailable by clearing the current universe."""
+    if not entry.runtime_data.universe.devices_by_sn:
+        return
+
+    entry.runtime_data.universe = qse.LutronUniverse()
+    for entities in entry.runtime_data.entities_by_device.values():
+        for entity in entities:
+            entity.async_write_ha_state()
+
+
+def _start_unsolicited_monitor(
+    hass: HomeAssistant, entry: LutronQSConfigEntry
+) -> None:
+    """Ensure there is exactly one unsolicited monitor task for the current connection."""
+    if (
+        entry.runtime_data.unsolicited_task is not None
+        and not entry.runtime_data.unsolicited_task.done()
+    ):
+        entry.runtime_data.unsolicited_task.cancel()
+
+    entry.runtime_data.unsolicited_task = entry.async_create_background_task(
+        hass,
+        monitor_unsolicited_messages(hass, entry),
+        name=f"lutronqs-{entry.entry_id}-monitor",
+    )
+
+
 async def connection_monitor(hass: HomeAssistant, entry: LutronQSConfigEntry) -> None:
     """Monitor connection health and re-enumerate devices periodically.
 
@@ -278,22 +313,41 @@ async def connection_monitor(hass: HomeAssistant, entry: LutronQSConfigEntry) ->
     _LOGGER.debug("Starting connection monitor")
 
     while True:
-        await asyncio.sleep(30)  # Check every 30 seconds
+        reconnect_reason: str | None = None
 
         try:
-            # Re-enumerate the universe to detect device changes
-            async with asyncio.timeout(10):
-                await process_device_updates(hass, entry)
+            await asyncio.wait_for(entry.runtime_data.connection_lost_event.wait(), 30)
+            reconnect_reason = "unsolicited monitor detected connection loss"
+        except asyncio.TimeoutError:
+            pass
 
-            # Reset backoff on success
-            backoff_index = 0
+        try:
+            if reconnect_reason is None:
+                # Re-enumerate the universe to detect device changes
+                async with asyncio.timeout(10):
+                    await process_device_updates(hass, entry)
 
-        except (asyncio.TimeoutError, OSError, lutron_connection.ProtocolError) as err:
+                # Reset backoff on success
+                backoff_index = 0
+                continue
+
+        except (
+            asyncio.TimeoutError,
+            OSError,
+            lutron_connection.ProtocolError,
+            lutron_connection.DisconnectedError,
+        ) as err:
+            reconnect_reason = str(err)
+
+        try:
             _LOGGER.warning(
                 "Connection lost to Lutron QS at %s: %s. Will attempt to reconnect.",
                 entry.data[CONF_HOST],
-                err,
+                reconnect_reason,
             )
+
+            entry.runtime_data.connection_lost_event.set()
+            _mark_all_entities_unavailable(entry)
 
             # Close the failed connection immediately
             try:
@@ -334,6 +388,8 @@ async def connection_monitor(hass: HomeAssistant, entry: LutronQSConfigEntry) ->
 
                         # Update connection with the new one
                         entry.runtime_data.connection = conn
+                        entry.runtime_data.connection_lost_event.clear()
+                        _start_unsolicited_monitor(hass, entry)
 
                         # Re-enumerate universe and trigger discovery
                         await process_device_updates(hass, entry)
@@ -375,12 +431,11 @@ async def monitor_unsolicited_messages(
 ) -> None:
     """Monitor unsolicited messages from the Lutron connection and route to entities."""
     _LOGGER.debug("Starting unsolicited message monitoring")
-    conn = entry.runtime_data.connection
 
     try:
         while True:
             # Read one unsolicited message
-            message = await conn.read_unsolicited()
+            message = await entry.runtime_data.connection.read_unsolicited()
 
             # Only process ~DEVICE messages
             if not message.startswith(b"~DEVICE,"):
@@ -414,6 +469,13 @@ async def monitor_unsolicited_messages(
     except asyncio.CancelledError:
         _LOGGER.debug("Unsolicited message monitoring cancelled")
         raise
+    except (
+        OSError,
+        lutron_connection.ProtocolError,
+        lutron_connection.DisconnectedError,
+    ) as err:
+        entry.runtime_data.connection_lost_event.set()
+        _LOGGER.debug("Unsolicited message monitor stopping after disconnect: %s", err)
     except Exception:
         _LOGGER.exception("Error in unsolicited message monitoring")
 
@@ -469,11 +531,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LutronQSConfigEntry) -> 
         raise ConfigEntryNotReady(f"Failed to enumerate devices on {host}") from err
 
     # Start monitoring unsolicited messages in a background task
-    entry.async_create_background_task(
-        hass,
-        monitor_unsolicited_messages(hass, entry),
-        name=f"lutronqs-{entry.entry_id}-monitor",
-    )
+    _start_unsolicited_monitor(hass, entry)
 
     # Start connection monitor for health checks and device discovery
     entry.async_create_background_task(
