@@ -54,8 +54,8 @@ def mock_lutron_connection() -> Generator[MagicMock]:
     """Mock the Lutron connection."""
     with (
         patch(
-            "homeassistant.components.lutronqs.asyncio.open_connection",
-        ) as mock_open,
+            "homeassistant.components.lutronqs._open_logged_connection",
+        ) as mock_open_logged_connection,
         patch(
             "homeassistant.components.lutronqs.lutron_connection.login",
         ) as mock_login,
@@ -66,7 +66,7 @@ def mock_lutron_connection() -> Generator[MagicMock]:
         # Mock the TCP connection
         mock_reader = AsyncMock()
         mock_writer = AsyncMock()
-        mock_open.return_value = (mock_reader, mock_writer)
+        mock_open_logged_connection.return_value = (mock_reader, mock_writer)
 
         # Mock the login
         mock_conn = AsyncMock()
@@ -81,7 +81,8 @@ def mock_lutron_connection() -> Generator[MagicMock]:
         mock_enumerate.return_value = mock_universe
 
         yield {
-            "open_connection": mock_open,
+            "open_connection": mock_open_logged_connection,
+            "open_logged_connection": mock_open_logged_connection,
             "login": mock_login,
             "enumerate": mock_enumerate,
             "connection": mock_conn,

@@ -4,10 +4,11 @@ rules:
     status: exempt
     comment: |
       This integration does not provide additional actions.
-  appropriate-polling: done
-      comment: |
-        The only polling is for reconnection and to detect topology changes.  All entity
-        updates are pushed from the gateway.
+  appropriate-polling:
+    status: done
+    comment: |
+      The only polling is for reconnection and to detect topology changes. All entity
+      updates are pushed from the gateway.
   brands: done
   common-modules: done
   config-flow-test-coverage:

@@ -6,11 +6,13 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from lutron_integration import devices as lutron_devices, qse
+from lutron_integration.recorded_session import SessionEvent
 from lutron_integration.connection import DisconnectedError
 from lutron_integration.types import DeviceAction, IntegrationIDMap, SerialNumber
 
 from homeassistant.components.lutronqs import (
     LutronQSData,
+    _log_traffic,
     _mark_all_entities_unavailable,
     connection_monitor,
     monitor_unsolicited_messages,
@@ -156,17 +158,17 @@ async def test_connection_monitor_reconnects_and_restarts_unsolicited(
     )
     config_entry.runtime_data.connection_lost_event.set()
 
-    task_holder: dict[str, asyncio.Task[None]] = {}
+    reconnected = asyncio.Event()
 
     async def fake_process_device_updates(
         _hass: HomeAssistant, entry: MockConfigEntry
     ) -> None:
         if entry.runtime_data.connection is new_conn:
-            task_holder["task"].cancel()
+            reconnected.set()
 
     with (
         patch(
-            "homeassistant.components.lutronqs.asyncio.open_connection",
+            "homeassistant.components.lutronqs._open_logged_connection",
             AsyncMock(return_value=(AsyncMock(), AsyncMock())),
         ),
         patch(
@@ -180,11 +182,11 @@ async def test_connection_monitor_reconnects_and_restarts_unsolicited(
         patch("homeassistant.components.lutronqs._start_unsolicited_monitor") as restart,
         patch("homeassistant.components.lutronqs.asyncio.sleep", AsyncMock()),
     ):
-        task_holder["task"] = hass.async_create_task(
-            connection_monitor(hass, config_entry)
-        )
+        task = hass.async_create_task(connection_monitor(hass, config_entry))
         try:
-            await task_holder["task"]
+            await reconnected.wait()
+            task.cancel()
+            await task
         except asyncio.CancelledError:
             pass
 
@@ -193,3 +195,20 @@ async def test_connection_monitor_reconnects_and_restarts_unsolicited(
     entity.async_write_ha_state.assert_called_once()
     assert config_entry.runtime_data.connection is new_conn
     assert not config_entry.runtime_data.connection_lost_event.is_set()
+
+
+def test_log_traffic_logs_direction_and_redaction(caplog) -> None:
+    """Test raw traffic logging includes direction and redaction marker."""
+    caplog.set_level("DEBUG")
+
+    _log_traffic(
+        "192.168.1.100",
+        SessionEvent(direction="outgoing", contents=b"abc\r\n", is_redacted=True),
+    )
+    _log_traffic(
+        "192.168.1.100",
+        SessionEvent(direction="incoming", contents=b"~MONITORING,1,1\r\n"),
+    )
+
+    assert "Traffic 192.168.1.100 outgoing (redacted): b'abc\\r\\n'" in caplog.text
+    assert "Traffic 192.168.1.100 incoming: b'~MONITORING,1,1\\r\\n'" in caplog.text

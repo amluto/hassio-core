@@ -11,6 +11,7 @@ from lutron_integration import (
     connection as lutron_connection,
     devices as lutron_devices,
     qse,
+    recorded_session,
 )
 from lutron_integration.types import SerialNumber, DeviceAction
 
@@ -28,6 +29,32 @@ HUB_FAMILY = b"CONTROL_INTERFACE(6)"
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.COVER, Platform.EVENT, Platform.LIGHT, Platform.REMOTE]
+
+
+def _log_traffic(host: str, event: recorded_session.SessionEvent) -> None:
+    """Emit raw Lutron traffic at debug level."""
+    _LOGGER.debug(
+        "Traffic %s %s%s: %r",
+        host,
+        event.direction,
+        " (redacted)" if event.is_redacted else "",
+        event.contents,
+    )
+
+
+async def _open_logged_connection(
+    host: str,
+) -> tuple[
+    lutron_connection.StreamReaderLike,
+    lutron_connection.StreamWriterLike,
+]:
+    """Open a Lutron connection and record raw traffic to the debug log."""
+    _LOGGER.info("Opening connection to Lutron QS at %s", host)
+    return await recorded_session.open_and_record_stream(
+        host,
+        23,
+        lambda event: _log_traffic(host, event),
+    )
 
 @dataclass
 class LutronQSData:
@@ -368,7 +395,7 @@ async def connection_monitor(hass: HomeAssistant, entry: LutronQSConfigEntry) ->
                 try:
                     # Try to reconnect
                     reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection(entry.data[CONF_HOST], 23), timeout=10.0
+                        _open_logged_connection(entry.data[CONF_HOST]), timeout=10.0
                     )
 
                     try:
@@ -475,7 +502,7 @@ async def monitor_unsolicited_messages(
         lutron_connection.DisconnectedError,
     ) as err:
         entry.runtime_data.connection_lost_event.set()
-        _LOGGER.debug("Unsolicited message monitor stopping after disconnect: %s", err)
+        _LOGGER.warning("Unsolicited message monitor stopping after disconnect: %s", err)
     except Exception:
         _LOGGER.exception("Error in unsolicited message monitoring")
 
@@ -494,7 +521,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LutronQSConfigEntry) -> 
 
     # Connect to the Lutron QS access point
     try:
-        reader, writer = await asyncio.open_connection(host, 23)
+        reader, writer = await _open_logged_connection(host)
     except (TimeoutError, OSError) as err:
         raise ConfigEntryNotReady(f"Unable to connect to {host}") from err
 
