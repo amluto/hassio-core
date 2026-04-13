@@ -6,10 +6,11 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from lutron_integration import devices as lutron_devices, qse
+from lutron_integration.connection import DisconnectedError, LoginError
 from lutron_integration.recorded_session import SessionEvent
-from lutron_integration.connection import DisconnectedError
 from lutron_integration.types import DeviceAction, IntegrationIDMap, SerialNumber
 
+from homeassistant import config_entries
 from homeassistant.components.lutronqs import (
     LutronQSData,
     _log_traffic,
@@ -20,6 +21,7 @@ from homeassistant.components.lutronqs import (
 )
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 
 from tests.common import MockConfigEntry
 
@@ -195,6 +197,141 @@ async def test_connection_monitor_reconnects_and_restarts_unsolicited(
     entity.async_write_ha_state.assert_called_once()
     assert config_entry.runtime_data.connection is new_conn
     assert not config_entry.runtime_data.connection_lost_event.is_set()
+
+
+async def test_connection_monitor_starts_reauth_on_reconnect_login_error(
+    hass: HomeAssistant,
+) -> None:
+    """Test reconnect auth failures start reauth and stop cleanly."""
+    old_conn = AsyncMock()
+    config_entry = MockConfigEntry(
+        domain="lutronqs",
+        data={
+            CONF_HOST: "192.168.1.100",
+            CONF_USERNAME: "nwk2",
+            CONF_PASSWORD: "bad_password",
+        },
+    )
+    entity = MagicMock()
+    serial = SerialNumber(b"12345678")
+    config_entry.runtime_data = LutronQSData(
+        connection=old_conn,
+        universe=qse.LutronUniverse(
+            devices_by_sn={serial: _make_device_details(serial)},
+            iidmap=IntegrationIDMap(),
+        ),
+        entities_by_device={serial: [entity]},
+    )
+    config_entry.runtime_data.connection_lost_event.set()
+
+    with (
+        patch(
+            "homeassistant.components.lutronqs._open_logged_connection",
+            AsyncMock(return_value=(AsyncMock(), AsyncMock())),
+        ),
+        patch(
+            "homeassistant.components.lutronqs.lutron_connection.login",
+            AsyncMock(side_effect=LoginError()),
+        ),
+        patch("homeassistant.components.lutronqs.asyncio.sleep", AsyncMock()),
+        patch.object(config_entry, "async_start_reauth") as start_reauth,
+    ):
+        task = config_entry.async_create_background_task(
+            hass,
+            connection_monitor(hass, config_entry),
+            "lutronqs-test-connection-monitor",
+        )
+        await asyncio.wait_for(task, timeout=1)
+
+    old_conn.disconnect.assert_awaited_once()
+    start_reauth.assert_called_once_with(hass)
+    entity.async_write_ha_state.assert_called_once()
+    assert config_entry.runtime_data.connection is old_conn
+    assert config_entry.runtime_data.connection_lost_event.is_set()
+    assert task.exception() is None
+
+
+async def test_component_recovers_after_connection_monitor_auth_failure(
+    hass: HomeAssistant,
+) -> None:
+    """Test the entry reloads cleanly after reconnect auth failure triggers reauth."""
+    config_entry = MockConfigEntry(
+        domain="lutronqs",
+        title="Lutron QS (192.168.1.100)",
+        data={
+            CONF_HOST: "192.168.1.100",
+            CONF_USERNAME: "nwk2",
+            CONF_PASSWORD: "bad_password",
+        },
+        unique_id="192.168.1.100",
+    )
+    config_entry.add_to_hass(hass)
+
+    first_conn = AsyncMock()
+    second_conn = AsyncMock()
+    first_conn.read_unsolicited.side_effect = DisconnectedError()
+
+    wait_for_cancel = asyncio.Event()
+
+    async def _block_unsolicited() -> bytes:
+        await wait_for_cancel.wait()
+        return b""
+
+    second_conn.read_unsolicited.side_effect = _block_unsolicited
+
+    open_connection = AsyncMock(
+        side_effect=[
+            (AsyncMock(), AsyncMock()),
+            (AsyncMock(), AsyncMock()),
+            (AsyncMock(), AsyncMock()),
+        ]
+    )
+    login = AsyncMock(side_effect=[first_conn, LoginError(), second_conn])
+
+    with (
+        patch(
+            "homeassistant.components.lutronqs._open_logged_connection",
+            open_connection,
+        ),
+        patch("homeassistant.components.lutronqs.lutron_connection.login", login),
+        patch(
+            "homeassistant.components.lutronqs.qse.enumerate_universe",
+            AsyncMock(return_value=qse.LutronUniverse()),
+        ),
+        patch("homeassistant.components.lutronqs.asyncio.sleep", AsyncMock()),
+        patch(
+            "homeassistant.components.lutronqs.config_flow.validate_connection",
+            AsyncMock(return_value=None),
+        ) as validate_connection,
+    ):
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert config_entry.state is config_entries.ConfigEntryState.LOADED
+
+        flows = hass.config_entries.flow.async_progress()
+        assert len(flows) == 1
+        assert flows[0]["context"]["entry_id"] == config_entry.entry_id
+        assert flows[0]["context"]["source"] == config_entries.SOURCE_REAUTH
+
+        result = await hass.config_entries.flow.async_configure(
+            flows[0]["flow_id"],
+            {
+                CONF_USERNAME: "nwk2",
+                CONF_PASSWORD: "good_password",
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert validate_connection.await_count == 1
+    assert config_entry.data[CONF_PASSWORD] == "good_password"
+    assert config_entry.state is config_entries.ConfigEntryState.LOADED
+    assert config_entry.runtime_data.connection is second_conn
+    assert not config_entry.runtime_data.connection_lost_event.is_set()
+    assert open_connection.await_count == 3
+    assert login.await_count == 3
 
 
 def test_log_traffic_logs_direction_and_redaction(caplog) -> None:

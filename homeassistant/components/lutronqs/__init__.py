@@ -432,14 +432,13 @@ async def connection_monitor(hass: HomeAssistant, entry: LutronQSConfigEntry) ->
                         break  # Successfully reconnected
 
                     except lutron_connection.LoginError:
-                        # Authentication failed - trigger reauth
+                        # Authentication failed - start reauth and stop the monitor.
                         _LOGGER.error(
                             "Authentication failed during reconnect to %s",
                             entry.data[CONF_HOST],
                         )
-                        raise ConfigEntryAuthFailed(
-                            f"Authentication failed for {entry.data[CONF_HOST]}"
-                        )
+                        entry.async_start_reauth(hass)
+                        return
 
                 except (asyncio.TimeoutError, OSError) as reconnect_err:
                     _LOGGER.debug(
