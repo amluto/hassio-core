@@ -539,6 +539,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: LutronQSConfigEntry) -> 
     except (TimeoutError, OSError) as err:
         raise ConfigEntryNotReady(f"Connection failed during login to {host}") from err
 
+    # Enable monitoring
+    try:
+        await conn.set_monitoring_mode(255, True)
+    except (TimeoutError, OSError, lutron_connection.ProtocolError) as err:
+        await conn.disconnect()
+        raise ConfigEntryNotReady(f"Failed to enable monitoring on {host}") from err
+
+
     # Store runtime data (will be populated by platforms and enumeration)
     entry.runtime_data = LutronQSData(
         connection=conn,

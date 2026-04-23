@@ -231,7 +231,7 @@ async def test_connection_monitor_starts_reauth_on_reconnect_login_error(
         ),
         patch(
             "homeassistant.components.lutronqs.lutron_connection.login",
-            AsyncMock(side_effect=LoginError()),
+            AsyncMock(side_effect=LoginError(b"login incorrect")),
         ),
         patch("homeassistant.components.lutronqs.asyncio.sleep", AsyncMock()),
         patch.object(config_entry, "async_start_reauth") as start_reauth,
@@ -270,6 +270,7 @@ async def test_component_recovers_after_connection_monitor_auth_failure(
     first_conn = AsyncMock()
     second_conn = AsyncMock()
     first_conn.read_unsolicited.side_effect = DisconnectedError()
+    serial = SerialNumber(b"12345678")
 
     wait_for_cancel = asyncio.Event()
 
@@ -286,7 +287,9 @@ async def test_component_recovers_after_connection_monitor_auth_failure(
             (AsyncMock(), AsyncMock()),
         ]
     )
-    login = AsyncMock(side_effect=[first_conn, LoginError(), second_conn])
+    login = AsyncMock(
+        side_effect=[first_conn, LoginError(b"login incorrect"), second_conn]
+    )
 
     with (
         patch(
@@ -296,7 +299,16 @@ async def test_component_recovers_after_connection_monitor_auth_failure(
         patch("homeassistant.components.lutronqs.lutron_connection.login", login),
         patch(
             "homeassistant.components.lutronqs.qse.enumerate_universe",
-            AsyncMock(return_value=qse.LutronUniverse()),
+            AsyncMock(
+                return_value=qse.LutronUniverse(
+                    devices_by_sn={serial: _make_device_details(serial)},
+                    iidmap=IntegrationIDMap(),
+                )
+            ),
+        ),
+        patch(
+            "homeassistant.components.lutronqs.lutron_devices.probe_device",
+            AsyncMock(return_value=[]),
         ),
         patch("homeassistant.components.lutronqs.asyncio.sleep", AsyncMock()),
         patch(
